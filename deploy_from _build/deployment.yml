@@ -1,0 +1,25 @@
+#deployment manfest for dev
+#AKS deployment file
+
+apiVersion : apps/v1
+kind: Deployment
+metadata:
+  name: inventoryMgt-BE
+  namespace: inventoryMgt-BE
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inventoryMgt-BE
+  template:
+    metadata:
+      labels:
+        app: inventoryMgt-BE
+    spec:
+      nodeSelector:
+        "kubernetes.io/os": linux      
+      containers:
+        - name: inventoryMgt-BE
+          image: 'afrmicroservicesacr.azurecr.io"/inventoryMgt-BE:latest'
+          ports:
+          - containerPort: 80
