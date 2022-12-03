@@ -1,0 +1,17 @@
+#service yml
+
+#AKS services file
+
+apiVersion: v1
+kind: Service
+metadata:
+    name: profileservice
+    namespace: onboarding-dev
+spec:
+    type: ClusterIP
+    ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 6000 
+    selector:
+        app: profileservice

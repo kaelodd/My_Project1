@@ -1,0 +1,25 @@
+#deployment manfest for dev
+#AKS deployment file
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: profileservice
+  namespace: onboarding-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: profileservice
+  template:
+    metadata:
+      labels:
+        app: profileservice
+    spec:
+      nodeSelector:
+        'kubernetes.io/os': linux
+      containers:
+        - name: profileservice
+          image: 'microservicesacrafrdev.azurecr.io/profileservice:latest'
+          ports:
+            - containerPort: 6000

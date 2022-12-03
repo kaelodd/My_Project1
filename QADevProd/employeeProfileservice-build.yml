@@ -1,0 +1,273 @@
+trigger:
+  branches:
+    include:
+    - main
+    - DEV
+    - QA
+
+resources:
+  repositories:
+  - repository: appsectemplates
+    type: git
+    name: DevSecOps/DevSecOps
+    endpoint: CrossOrg-Devsecops
+
+parameters:
+    - name: app
+      type: string
+      default: 'ProfileService'
+    - name: dockerfile
+      type: string
+      default: 'Dockerfile'
+    - name: devDockerRegistryServiceConnection
+      type: string
+      default: 'ACR-Dev'
+    - name: qaDockerRegistryServiceConnection
+      type: string
+      default: 'ACR-QA'
+    - name: prodDockerRegistryServiceConnection
+      type: string
+      default: 'ACR-Prod'
+    - name: imageRepository
+      type: string
+      default: 'profileservice'
+    - name: BuildAgentPoolNonProd
+      type: string
+      default: 'AFR_Non_Prod_Self_hosted_Pool'
+    #production agent pool
+    - name: BuildAgentPoolProd
+      type: string
+      default: 'AFR_Prod_Self_hosted_Pool'
+
+    - name: docker_build_arguments
+      type: object
+      default: |
+        --build-arg PORT="$(PORT)"
+        --build-arg HOST="$(DB_HOST)"
+        --build-arg NAME="$(DB_NAME)"
+        --build-arg USER="$(DB_USER)"
+        --build-arg PASSWORD="$(DB_PASSWORD)"
+        --build-arg MAILHOST="$(MAIL_HOST)"
+        --build-arg MAILPASS="$(MAIL_PASS)"
+        --build-arg SESSIONSECRET="$(SESSION_SECRET)"
+        --build-arg SNOWDEVEMAIL="$(SNOW_DEV_EMAIL)"
+        --build-arg SNOWPRODEMAIL="$(SNOW_PROD_EMAIL)"
+        --build-arg SQLPORT="$(SQL_PORT)"
+        --build-arg MAXAGE="$(MAX_AGE)"
+        --build-arg DSJWTCLIENTID="$(dsJWTClientId)"
+        --build-arg DSOAUTHSERVER="$(dsOauthServer)"
+        --build-arg IMPERSONATEDUSERGUID="$(impersonatedUserGuid)"
+        --build-arg USERURL="$(USER_URL)"
+        --build-arg UPLOADTOAZUREURL="$(UPLOAD_TO_AZURE_URL)"
+        --build-arg SNOWURL="$(SNOW_URL)"
+        --build-arg SNOWDEVICE="$(SNOW_DEVICE)"
+        --build-arg SESSIONNAME="$(SESSION_NAME)"
+        --build-arg REDIRECTUSERTOBACKENDONDOCUMENTFILLSUCCESS="$(REDIRECT_USER_TO_BACKEND_ON_DOCUMENT_FILL_SUCCESS)"
+        --build-arg REDIRECTUSERFRONTENDAFTERDOCUMENTUPDATE="$(REDIRECT_USER_FRONTEND_AFTER_DOCUMENT_UPDATE)"
+        --build-arg PINGURL="$(PING_URL)"
+        --build-arg OAUTHREDIRECTURI="$(OAUTH_REDIRECT_URI)"
+        --build-arg OAUTHAUTHORITY="$(OAUTH_AUTHORITY)"
+        --build-arg OAUTHAPPSECRET="$(OAUTH_APP_SECRET)"
+        --build-arg OAUTHAPPID="$(OAUTH_APP_ID)"
+        --build-arg EMAILURL="$(EMAIL_URL)"
+        --build-arg EDITPROFILEDOCUMENT="$(EDIT_PROFILE_DOCUMENT)"
+        --build-arg CLIENTURL="$(CLIENT_URL)"
+        --build-arg AZUREDOCUMENTSURL="$(AZURE_DOCUMENTS_URL)"
+        --build-arg DOCUSIGNREDIRECTAFTERCONSENT="$(DOCUSIGN_REDIRECT_AFTER_CONSENT)"
+        --build-arg DOCUSIGNCCFULLNAME="$(DOCUSIGN_CC_FULLNAME)"
+        --build-arg DOCUSIGNCCEMAIL="$(DOCUSIGN_CC_EMAIL)"
+        --build-arg DOCUSIGNPRIVATEKEY="$(DOCUSIGN-PRIVATE-KEY)"
+        --build-arg SENDGRIDAPIKEY="$(SENDGRID_API_KEY)"
+        --build-arg SENDGRIDDOMAINEMAIL="$(SENDGRID_DOMAIN_EMAIL)"
+          
+variables:
+- name: 'vmImageName'
+  value: 'ubuntu-latest'
+
+- name: 'sonarName'
+  value: 'AFR-onboarding-profileservice'
+
+- name: 'ACR'
+  value: 'microservicesacrafrdev.azurecr.io'
+
+- name: 'checkmarxTeam'
+  value: 'CxServer\AB-InBev\AFR\AFR_Onboarding'
+
+stages:
+  - stage: Scan
+    displayName: Secure Scan
+    jobs:
+    - job: SecureScan
+      displayName: SecureScan
+      variables:
+        - group: '${{parameters.app}}'
+      pool:
+        vmImage: 'ubuntu-latest'
+
+      steps:
+        - checkout: self
+        - checkout: appsectemplates
+        - template: pipeline_templates/Security_tasks/prepareSonarCloud.yml@appsectemplates
+          parameters:
+            SCServiceConnection: 'SonarcloudServer'
+            SCProjectKey: $(sonarName)
+            SCProjectName: $(sonarName)
+            SCBranchName: '$(Build.SourceBranchName)'
+            SCBaseDirPath: './$(Build.Repository.Name)'
+
+        - template: pipeline_templates/secure_code_scan.yml@appsectemplates
+          parameters:
+            scanSonarCloud: true
+            sonarCloudGate: false
+            SCServiceConnection: 'SonarcloudServer'
+            
+            scanSnyk: true
+            SKFailOnIssues: false
+            SkServiceConnection: 'SnykServer'
+            SkOrganization: '6faff7dd-4e52-4ac6-af3c-a5d1eaa27be2'
+            SkAdditionalArgs: '--all-projects --detection-depth=4'       
+            scanGitleaks: true
+            scanSnykContainer: true
+            SkDockerImageName: '$(ACR)/${{parameters.imageRepository}}:$(Build.BuildNumber)'
+            SkDockerFilePath: './$(Build.Repository.Name)/Dockerfile'
+
+            scanCheckmarx: true
+            CxServiceConnection: 'CheckmarxServer'
+            CxPreset: 'ASA_SDLC_Ready'
+            CxEnableSyncScan: false
+            CxEnableThreshold: false
+            CxTeamName: $(checkmarxTeam)
+
+  - stage: Dev
+    displayName: DEV
+    #dependsOn: Scan
+    #condition: and( not(failed()), not(canceled()), eq(variables['Build.SourceBranch'], 'refs/heads/DEV'))
+    pool:
+      name: ${{parameters.BuildAgentPoolNonProd}}
+      demands:  agent.os -equals Linux
+    variables:
+      - group: '${{parameters.app}}'
+    jobs:
+    - job: Build
+      displayName: Dev Build and Push
+
+      steps:
+      - task: Docker@2
+        displayName: 'Build'
+        inputs:
+          command: build
+          containerRegistry: '${{parameters.devDockerRegistryServiceConnection}}'
+          repository: '${{parameters.imageRepository}}'
+          dockerfile: '$(Build.SourcesDirectory)/${{parameters.dockerfile}}' #'**/Dockerfile'
+          arguments: |
+            ${{parameters.docker_build_arguments}}
+          tags: |
+            $(Build.BuildNumber)
+            latest
+
+      - task: Docker@2
+        displayName: 'Push'
+        inputs:
+          command: push
+          containerRegistry: '${{parameters.devDockerRegistryServiceConnection}}'
+          repository: '${{parameters.imageRepository}}'
+          dockerfile: '$(Build.SourcesDirectory)/${{parameters.dockerfile}}' #'**/Dockerfile'
+          tags: |
+            $(Build.BuildNumber)
+            latest
+
+      - task: PublishPipelineArtifact@1
+        displayName: "Publish manifest artifact"
+        inputs:
+          targetPath: '$(Build.SourcesDirectory)/.azuredevops/manifests-dev'
+          artifact: 'manifests-dev'
+          publishLocation: 'pipeline'
+
+  - stage: QA
+    displayName: QA
+    # dependsOn: Scan
+    # condition: and( not(failed()), not(canceled()), eq(variables['Build.SourceBranch'], 'refs/heads/QA'))
+    pool:
+      name: ${{parameters.BuildAgentPoolNonProd}} #'AFR_Non_Prod_Self_hosted_Pool'
+      demands:  agent.os -equals Linux
+    variables:
+      - group: '${{parameters.app}}QA'
+    jobs:
+    - job: Build
+      displayName: Dev Build and Push
+
+      steps:
+      - task: Docker@2
+        displayName: 'Build'
+        inputs:
+          command: build
+          containerRegistry: '${{parameters.qaDockerRegistryServiceConnection}}'
+          repository: '${{parameters.imageRepository}}'
+          dockerfile: '$(Build.SourcesDirectory)/${{parameters.dockerfile}}' #'**/Dockerfile'
+          arguments: |
+            ${{parameters.docker_build_arguments}}
+          tags: |
+            $(Build.BuildNumber)
+            latest
+
+      - task: Docker@2
+        displayName: 'Push'
+        inputs:
+          command: push
+          containerRegistry: '${{parameters.qaDockerRegistryServiceConnection}}'
+          repository: '${{parameters.imageRepository}}'
+          dockerfile: '$(Build.SourcesDirectory)/${{parameters.dockerfile}}' #'**/Dockerfile'
+          tags: |
+            $(Build.BuildNumber)
+            latest
+
+      - task: PublishPipelineArtifact@1
+        displayName: "Publish manifest artifact"
+        inputs:
+          targetPath: '$(Build.SourcesDirectory)/.azuredevops/manifests-qa'
+          artifact: 'manifests-qa'
+          publishLocation: 'pipeline'
+
+  - stage: Prod
+    displayName: PROD
+    # dependsOn: Scan
+    # condition: and( not(failed()), not(canceled()), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    variables:
+     - group: '${{parameters.app}}PROD'
+    pool:
+      name: ${{parameters.BuildAgentPoolProd}}
+      demands:  agent.os -equals Linux
+    jobs:
+    - job: Build
+      displayName: Prod Build and Push
+      
+      steps:
+      - task: Docker@2
+        displayName: Build
+        inputs:
+          command: build
+          repository: ${{parameters.imageRepository}}
+          dockerfile: '$(Build.SourcesDirectory)/${{parameters.dockerfile}}'
+          containerRegistry: ${{parameters.prodDockerRegistryServiceConnection}}
+          arguments: |
+            ${{parameters.docker_build_arguments}}
+          tags: |
+            $(Build.BuildNumber)
+            latest
+        
+      - task: Docker@2
+        displayName: Push
+        inputs:
+            command: push
+            repository: ${{parameters.imageRepository}}
+            containerRegistry: ${{parameters.prodDockerRegistryServiceConnection}}
+            tags: |
+              $(Build.BuildNumber)
+              latest
+
+      - task: PublishPipelineArtifact@1
+        displayName: "Publish manifest artifact"
+        inputs:
+          targetPath: '$(Build.SourcesDirectory)/.azuredevops/manifests-prod'
+          artifact: 'manifests-prod'
+          publishLocation: 'pipeline'
