@@ -1,0 +1,11 @@
+#service yml for dev
+
+apiVersion: v1
+kind: Service
+metadata:
+    name: fmscentral
+spec:
+    ports:
+    - port: 80 
+    selector:
+        app: fmscentral

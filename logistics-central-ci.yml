@@ -1,0 +1,254 @@
+trigger:
+  branches:
+    include:
+    - main
+    - DEV
+    - QA
+
+resources:
+  repositories:
+  - repository: appsectemplates
+    type: git
+    name: DevSecOps/DevSecOps
+    endpoint: CrossOrg-Devsecops
+
+parameters:
+    - name: app
+      type: string
+      default: 'FMS-Central'
+    - name: dockerfile
+      type: string
+      default: 'Dockerfile'
+    - name: devDockerRegistryServiceConnection
+      type: string
+      default: 'ACR-MAP-DEV'
+    - name: qaDockerRegistryServiceConnection
+      type: string
+      default: 'ACR-MAP-QA'
+    - name: prodDockerRegistryServiceConnection
+      type: string
+      default: 'ACR-MAP-PROD'
+    - name: imageRepository
+      type: string
+      default: 'fmscentral'
+    - name: BuildAgentPoolNonProd
+      type: string
+      default: 'ABI_AFR_Map_NonProd_Self_hosted_Pool'
+    #production agent pool
+    - name: BuildAgentPoolProd
+      type: string
+      default: 'ABI_AFR_Map_Prod_Self_hosted_Pool'
+
+    - name: docker_build_arguments
+      type: object
+      default: |
+         --build-arg PORT=$(PORT)
+         --build-arg GRPC_PORT=$(GRPC_PORT)
+         --build-arg NODE_ENV=$(NODE_ENV)
+         --build-arg USER_SVC=$(USER_SVC)
+         --build-arg DATABASE_LOGGING=$(DATABASE_LOGGING)
+         --build-arg SLACK_TOKEN=$(SLACK_TOKEN)
+         --build-arg EMAIL=$(EMAIL)
+         --build-arg EMAIL_PASSWORD=$(EMAIL_PASSWORD)
+         --build-arg WEBSITE_URL=$(WEBSITE_URL)
+         --build-arg SUNSTONE_TOKEN=$(SUNSTONE_TOKEN)
+         --build-arg TZ=$(TZ)
+
+variables:
+- name: 'sonarName'
+  value: 'AFR-FMS-Central'
+
+- name: 'ACR'
+  value: 'afrmapcoreinfrasandevacr.azurecr.io'
+
+- name: 'checkmarxTeam'
+  value: '/CxServer/AB-InBev/AFR/AFR_FMSLogistics'
+
+stages:
+  - stage: Scan
+    displayName: Secure Scan
+    jobs:
+    - job: SecureScan
+      displayName: SecureScan
+      variables:
+        - group: '${{parameters.app}}'
+      pool:
+        vmImage: 'ubuntu-latest'
+
+      steps:
+        - checkout: self
+        - checkout: appsectemplates
+        - template: pipeline_templates/Security_tasks/prepareSonarCloud.yml@appsectemplates
+          parameters:
+            SCServiceConnection: 'SonarcloudServer'
+            SCProjectKey: $(sonarName)
+            SCProjectName: $(sonarName)
+            SCBranchName: '$(Build.SourceBranchName)'
+            SCBaseDirPath: './$(Build.Repository.Name)'
+            
+        - task: Docker@2
+          displayName: Build
+          inputs:
+            command: build
+            repository: ${{parameters.imageRepository}}
+            dockerfile: '**/${{parameters.dockerfile}}'
+            containerRegistry: ${{parameters.devDockerRegistryServiceConnection}} #$(dockerRegistryServiceConnection)
+            arguments: |
+              ${{parameters.docker_build_arguments}}
+            # arguments: |
+            #   --build-arg PORT=$(PORT)
+            #   --build-arg GRPC_PORT=$(GRPC_PORT)
+            #   --build-arg NODE_ENV=$(NODE_ENV)
+            #   --build-arg USER_SVC=$(USER_SVC)
+            #   --build-arg DATABASE_LOGGING=$(DATABASE_LOGGING)
+            #   --build-arg SLACK_TOKEN=$(SLACK_TOKEN)
+            #   --build-arg EMAIL=$(EMAIL)
+            #   --build-arg EMAIL_PASSWORD=$(EMAIL_PASSWORD)
+            #   --build-arg WEBSITE_URL=$(WEBSITE_URL)
+            #   --build-arg SUNSTONE_TOKEN=$(SUNSTONE_TOKEN)
+            #   --build-arg TZ=$(TZ)
+
+            tags: |
+              $(Build.BuildNumber)
+              latest
+
+        - template: pipeline_templates/secure_code_scan.yml@appsectemplates
+          parameters:
+            scanSonarCloud: true
+            sonarCloudGate: false
+            SCServiceConnection: 'SonarcloudServer'
+            
+            scanSnyk: true
+            SKFailOnIssues: false
+            SkServiceConnection: 'SnykServer'
+            SkOrganization: '6faff7dd-4e52-4ac6-af3c-a5d1eaa27be2'
+            SkAdditionalArgs: '--all-projects --detection-depth=4'       
+            scanGitleaks: true
+            scanSnykContainer: true
+            SkDockerImageName: '$(ACR)/${{parameters.imageRepository}}:$(Build.BuildNumber)'
+            SkDockerFilePath: './$(Build.Repository.Name)/Dockerfile'
+
+            scanCheckmarx: true
+            CxServiceConnection: 'CheckmarxServer'
+            CxPreset: 'ASA_SDLC_Ready'
+            CxEnableSyncScan: false
+            CxEnableThreshold: false
+            CxTeamName: $(checkmarxTeam)
+
+  - stage: Dev
+    displayName: DEV
+    #dependsOn: Scan
+    #condition: and( not(failed()), not(canceled()), eq(variables['Build.SourceBranch'], 'refs/heads/DEV'))
+    pool:
+      name: ${{parameters.BuildAgentPoolNonProd}}
+      demands:  agent.os -equals Linux
+    variables:
+     - group: '${{parameters.app}}'
+    jobs:
+    - job: Build
+      displayName: Dev Build and Push
+
+      steps:
+      - task: Docker@2
+        displayName: Docker login
+        inputs:
+          containerRegistry: ${{parameters.devDockerRegistryServiceConnection}} #'afrmapcoreinfrasandevacr'
+          command: 'login'
+
+      - task: Docker@2
+        displayName: Build
+        inputs:
+          command: build
+          repository: ${{parameters.imageRepository}}
+          dockerfile: '$(Build.SourcesDirectory)/${{parameters.dockerfile}}'
+          containerRegistry: ${{parameters.devDockerRegistryServiceConnection}}
+          arguments: |
+            ${{parameters.docker_build_arguments}}
+          # arguments: |
+          #   --build-arg PORT=$(PORT)
+          #   --build-arg GRPC_PORT=$(GRPC_PORT)
+          #   --build-arg NODE_ENV=$(NODE_ENV)
+          #   --build-arg USER_SVC=$(USER_SVC)
+          #   --build-arg DATABASE_LOGGING=$(DATABASE_LOGGING)
+          #   --build-arg SLACK_TOKEN=$(SLACK_TOKEN)
+          #   --build-arg EMAIL=$(EMAIL)
+          #   --build-arg EMAIL_PASSWORD=$(EMAIL_PASSWORD)
+          #   --build-arg WEBSITE_URL=$(WEBSITE_URL)
+          #   --build-arg SUNSTONE_TOKEN=$(SUNSTONE_TOKEN)
+          #   --build-arg TZ=$(TZ)
+
+          tags: |
+            $(Build.BuildNumber)
+            latest
+        
+      - task: Docker@2
+        displayName: Push
+        inputs:
+            command: push
+            repository: ${{parameters.imageRepository}}
+            containerRegistry: ${{parameters.devDockerRegistryServiceConnection}}
+            tags: |
+              $(Build.BuildNumber)
+              latest
+
+      - task: PublishPipelineArtifact@1
+        displayName: "Publish Dev manifest Dev"
+        inputs:
+          targetPath: '$(Build.SourcesDirectory)/.azuredevops/manifests-dev'
+          artifact: 'manifests-dev'
+          publishLocation: 'pipeline'
+
+  # - stage: QA
+  #   displayName: QA
+  #   dependsOn: Scan
+  #   condition: and( not(failed()), not(canceled()), eq(variables['Build.SourceBranch'], 'refs/heads/QA'))
+  #   pool:
+  #     name: ${{parameters.BuildAgentPoolNonProd}} #'AFR_Non_Prod_Self_hosted_Pool'
+  #     demands:  agent.os -equals Linux
+  #   variables:
+  #    - group: '${{parameters.app}}QA'
+  #   jobs:
+  #   - job: Build
+  #     displayName: Dev Build and Push
+
+  #     steps:
+  #     - task: Docker@2
+  #       displayName: Build
+  #       inputs:
+  #         command: build
+  #         repository: ${{parameters.imageRepository}}
+  #         dockerfile: '$(Build.SourcesDirectory)/${{parameters.dockerfile}}'
+  #         containerRegistry: ${{parameters.qaDockerRegistryServiceConnection}}
+  #         arguments: |
+  #           --build-arg API_VERSION=$(API_VERSION)
+  #           --build-arg APP_KEY=$(APP_KEY)
+  #           --build-arg APP_NAME=$(APP_NAME)
+  #           --build-arg AUTH_NAME=$(AUTH_NAME)
+  #           --build-arg BUGSNAG_API_KEY=$(BUGSNAG_API_KEY)
+  #           --build-arg DATABASE_URL=$(DATABASE_URL)
+  #           --build-arg DEVELOPMENT=$(DEVELOPMENT)
+  #           --build-arg ENCRYPTION_KEY=$(ENCRYPTION_KEY)
+  #           --build-arg SERVER_ADDRESS=$(SERVER_ADDRESS)
+  #           --build-arg SERVER_PORT=$(SERVER_PORT)
+  #           --build-arg TOKEN_LIFE=$(TOKEN_LIFE)
+
+  #         tags: |
+  #           $(Build.BuildNumber)
+  #           latest
+        
+  #     - task: Docker@2
+  #       displayName: Push
+  #       inputs:
+  #           command: push
+  #           repository: ${{parameters.imageRepository}}
+  #           containerRegistry: ${{parameters.qaDockerRegistryServiceConnection}}
+  #           tags: |
+  #             $(Build.BuildNumber)
+  #             latest
+
+  #     - task: PublishPipelineArtifact@1
+  #       displayName: "Publish Dev manifest Dev"
+  #       inputs:
+  #         targetPath: '$(Build.SourcesDirectory)/.azuredevops/manifests-qa'
+  #         artifact: 'manifests-qa'
+  #         publishLocation: 'pipeline'

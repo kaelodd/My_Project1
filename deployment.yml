@@ -1,0 +1,23 @@
+#deployment yml for dev
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fmscentral
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fmscentral
+  template:
+    metadata:
+      labels:
+        app: fmscentral 
+    spec:
+      nodeSelector:
+        'kubernetes.io/os': linux
+        'kubernetes.azure.com/agentpool': maplin
+      containers:
+        - name: fmscentral 
+          image: afrmapcoreinfrasandevacr.azurecr.io/fmscentral:latest
+          ports:
+          - containerPort: 80
